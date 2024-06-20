@@ -138,7 +138,7 @@ class BPlusTree {
   // Utility functions
   // Insert a key and value into the B+ tree Leaf Page
   void InsertIntoLeaf(LeafPage *leaf_page, const KeyType &key, const ValueType &value, Transaction *txn);
-
+  void RemoveFromLeaf(LeafPage* leaf_page, const KeyType &key, Transaction* txn);
   //ChangeRootPageId to root_page_id
   void SetRootPageId(page_id_t root_page_id);
   /* Debug Routines for FREE!! */

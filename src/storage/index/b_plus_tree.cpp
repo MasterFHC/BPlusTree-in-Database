@@ -116,8 +116,8 @@ void BPLUSTREE_TYPE::SetRootPageId(page_id_t root_page_id)
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-void BPLUSTREE_TYPE::InsertIntoLeaf(LeafPage* leaf_page, const KeyType& key,
-                    const ValueType& value, Transaction* txn)
+void BPLUSTREE_TYPE::InsertIntoLeaf(LeafPage* leaf_page, const KeyType &key,
+                    const ValueType &value, Transaction* txn)
 {
   leaf_page -> IncreaseSize(1);
   int slot_cnt = leaf_page -> GetSize() - 1;
@@ -247,11 +247,45 @@ auto BPLUSTREE_TYPE::Insert(const KeyType& key, const ValueType& value,
  * delete entry from leaf page. Remember to deal with redistribute or merge if
  * necessary.
  */
+INDEX_TEMPLATE_ARGUMENTS
+void BPLUSTREE_TYPE::RemoveFromLeaf(LeafPage* leaf_page, const KeyType &key, Transaction* txn)
+{
+  int slot_cnt = leaf_page -> GetSize() - 1;
+  int slot_num = BinaryFind(leaf_page, key);
+  for(int i=slot_num; i<slot_cnt; i++){
+    leaf_page -> SetAt(i, leaf_page -> KeyAt(i+1), leaf_page -> ValueAt(i+1));
+  }
+  leaf_page -> IncreaseSize(-1);
+  return;
+}
 
 INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::Remove(const KeyType& key, Transaction* txn)
 {
-  //Your code here
+  BasicPageGuard head_guard = bpm_ -> FetchPageBasic(header_page_id_);
+  if(head_guard.template As<BPlusTreeHeaderPage>() -> root_page_id_ == INVALID_PAGE_ID){
+    //if the tree is empty, simply return
+    return;
+  }
+  BasicPageGuard guard = bpm_ -> FetchPageBasic(head_guard.template As<BPlusTreeHeaderPage>() -> root_page_id_);
+  head_guard.Drop();
+  auto now_page = guard.template AsMut<BPlusTreePage>();
+  while(!now_page -> IsLeafPage()){
+    auto internal_page = reinterpret_cast<InternalPage*>(now_page);
+    int slot_num = BinaryFind(internal_page, key);
+    if(slot_num == -1){
+      return;
+    }
+    guard = bpm_ -> FetchPageBasic(internal_page -> ValueAt(slot_num));
+    now_page = guard.template AsMut<BPlusTreePage>();
+  }
+  auto leaf_page = reinterpret_cast<LeafPage*>(now_page);
+  int slot_num = BinaryFind(leaf_page, key);
+  if(slot_num == -1){
+    return;
+  }
+  RemoveFromLeaf(leaf_page, key, txn);
+  return;
 }
 
 /*****************************************************************************
