@@ -82,13 +82,65 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType& key,
  * @return: since we only support unique key, if user try to insert duplicate
  * keys return false, otherwise return true.
  */
-
+INDEX_TEMPLATE_ARGUMENTS
+void InsertIntoLeaf(LeafPage* leaf_page, const KeyType& key,
+                    const ValueType& value, Transaction* txn)
+{
+  leaf_page -> IncreaseSize(1);
+  int slot_cnt = leaf_page -> GetSize() - 1;
+  for(int i=slot_cnt; i>0; i--){
+    if(comparator_(leaf_page -> KeyAt(i-1), key) == 1){
+      leaf_page -> SetAt(i, leaf_page -> KeyAt(i-1), leaf_page -> ValueAt(i-1));
+    }
+    else{
+      leaf_page -> SetAt(i, key, value);
+      return;
+    }
+  }
+  leaf_page -> SetAt(0, key, value);
+  return;
+}
 
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Insert(const KeyType& key, const ValueType& value,
                             Transaction* txn)  ->  bool
 {
-  //Your code here
+  ReadPageGuard head_guard = bpm_ -> FetchPageRead(header_page_id_);
+  
+  if(head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_ == INVALID_PAGE_ID){
+    // Create a B+ tree
+    page_id_t root_page_id;
+    auto root_guard = bpm_ -> NewPageGuarded(&root_page_id);
+    auto root_page = root_guard.template AsMut<BPlusTreePage>();
+    root_page -> Init(leaf_max_size_);
+    WritePageGuard guard = bpm_ -> FetchPageWrite(root_page_id);
+    head_guard -> Drop();
+    auto now_page = guard.template AsMut<LeafPage>();
+    now_page -> IncreaseSize(1);
+    auto now_index = now_page -> GetSize() - 1;//leaf page starts at index 0
+    now->page->SetAt(now_index, key, value);
+    return true;
+  }
+  else{
+    // Insert into leaf page
+    auto now_page = head_guard.template AsMut<BPlusTreePage>();
+    while(!now_page -> IsLeafPage()){
+      auto internal_page = reinterpret_cast<const InternalPage*>(now_page);
+      int slot_num = BinaryFind(internal_page, key);
+      if(slot_num == -1){
+        return false;
+      }
+      head_guard = bpm_ -> FetchPageWrite(internal_page -> ValueAt(slot_num));
+      now_page = head_guard.template AsMut<BPlusTreePage>();
+    }
+    auto leaf_page = reinterpret_cast<const LeafPage*>(now_page);
+    int slot_num = BinaryFind(leaf_page, key);
+    if(slot_num != -1){
+      return false;
+    }
+    InsertIntoLeaf(leaf_page, key, value, txn);
+    return true;
+  }
   return true;
 }
 

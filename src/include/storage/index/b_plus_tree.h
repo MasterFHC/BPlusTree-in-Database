@@ -132,6 +132,11 @@ class BPlusTree {
   void BatchOpsFromFile(const std::string &file_name, Transaction *txn = nullptr);
 
  private:
+  // Utility functions
+  // Insert a key and value into the B+ tree Leaf Page
+  void InsertIntoLeaf(LeafPage *leaf_page, const KeyType &key, const ValueType &value, Transaction *txn);
+
+
   /* Debug Routines for FREE!! */
   void ToGraph(page_id_t page_id, const BPlusTreePage *page, std::ofstream &out);
 
