@@ -1,5 +1,6 @@
 #include "storage/index/b_plus_tree.h"
 
+#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -66,10 +67,31 @@ auto BPLUSTREE_TYPE::IsEmpty() const  ->  bool
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::GetValue(const KeyType& key,
                               std::vector<ValueType>* result, Transaction* txn)
-     ->  bool
+    -> bool
 {
-  //Your code here
-  return true;
+    BasicPageGuard head_guard = bpm_ -> FetchPageBasic(header_page_id_);
+    if(head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_ == INVALID_PAGE_ID){
+      return false;
+    }
+    else{
+      auto now_page = head_guard.template As<BPlusTreePage>();
+      while(!now_page -> IsLeafPage()){
+        auto internal_page = reinterpret_cast<const InternalPage*>(now_page);
+        int slot_num = BinaryFind(internal_page, key);
+        if(slot_num == -1){
+          return false;
+        }
+        head_guard = bpm_ -> FetchPageBasic(internal_page -> ValueAt(slot_num));
+        now_page = head_guard.template As<BPlusTreePage>();
+      }
+      auto leaf_page = reinterpret_cast<const LeafPage*>(now_page);
+      int slot_num = BinaryFind(leaf_page, key);
+      if(slot_num == -1){
+        return false;
+      }
+      result -> push_back(leaf_page -> ValueAt(slot_num));
+      return true;
+    }
 }
 
 /*****************************************************************************
@@ -83,11 +105,22 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType& key,
  * keys return false, otherwise return true.
  */
 INDEX_TEMPLATE_ARGUMENTS
-void InsertIntoLeaf(LeafPage* leaf_page, const KeyType& key,
+void BPLUSTREE_TYPE::SetRootPageId(page_id_t root_page_id)
+{
+    BasicPageGuard guard = bpm_ -> FetchPageBasic(header_page_id_);
+    auto root_header_page = guard.template AsMut<BPlusTreeHeaderPage>();
+    root_header_page -> root_page_id_ = root_page_id;
+    return;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+void BPLUSTREE_TYPE::InsertIntoLeaf(LeafPage* leaf_page, const KeyType& key,
                     const ValueType& value, Transaction* txn)
 {
+//   std::cout<<"inserting into leaf!"<<std::endl;
   leaf_page -> IncreaseSize(1);
   int slot_cnt = leaf_page -> GetSize() - 1;
+//   std::cout<<"slotcnt="<<slot_cnt<<std::endl;
   for(int i=slot_cnt; i>0; i--){
     if(comparator_(leaf_page -> KeyAt(i-1), key) == 1){
       leaf_page -> SetAt(i, leaf_page -> KeyAt(i-1), leaf_page -> ValueAt(i-1));
@@ -105,41 +138,95 @@ INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Insert(const KeyType& key, const ValueType& value,
                             Transaction* txn)  ->  bool
 {
-  ReadPageGuard head_guard = bpm_ -> FetchPageRead(header_page_id_);
+    // std::cout<<"inserting!"<<std::endl;
+  BasicPageGuard head_guard = bpm_ -> FetchPageBasic(header_page_id_);
   
   if(head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_ == INVALID_PAGE_ID){
     // Create a B+ tree
-    page_id_t root_page_id;
-    auto root_guard = bpm_ -> NewPageGuarded(&root_page_id);
-    auto root_page = root_guard.template AsMut<BPlusTreePage>();
-    root_page -> Init(leaf_max_size_);
-    WritePageGuard guard = bpm_ -> FetchPageWrite(root_page_id);
-    head_guard -> Drop();
+    head_guard.Drop();
+    page_id_t new_id;
+    auto root_guard = bpm_ -> NewPageGuarded(&new_id);
+    SetRootPageId(new_id);
+    BasicPageGuard guard = bpm_ -> FetchPageBasic(new_id);
+    root_guard.Drop();
     auto now_page = guard.template AsMut<LeafPage>();
+    now_page -> Init();
     now_page -> IncreaseSize(1);
-    auto now_index = now_page -> GetSize() - 1;//leaf page starts at index 0
-    now->page->SetAt(now_index, key, value);
+    // std::cout<<"slotcnt="<<now_page -> GetSize()<<std::endl;
+
+    //leaf page starts at index 0
+    now_page->SetAt(0, key, value);
     return true;
   }
   else{
+    //Create a Context class to keep track of the pages on the path to the leaf page
+    Context context;
     // Insert into leaf page
-    auto now_page = head_guard.template AsMut<BPlusTreePage>();
+    context.basic_set_.push_back(bpm_ -> FetchPageBasic(head_guard.template AsMut<BPlusTreeHeaderPage>()->root_page_id_));
+    // context.basic_set_.push_back(std::move(guard));
+    head_guard.Drop();
+    page_id_t now_page_id;
+    auto now_page = context.basic_set_.back().template AsMut<BPlusTreePage>();
+    // std::cout<<"else, slotcnt="<<now_page -> GetSize()<<std::endl;
     while(!now_page -> IsLeafPage()){
-      auto internal_page = reinterpret_cast<const InternalPage*>(now_page);
+        // std::cout<<"not leaf"<<std::endl;
+      auto internal_page = reinterpret_cast<InternalPage*>(now_page);
       int slot_num = BinaryFind(internal_page, key);
       if(slot_num == -1){
+        // std::cout<<"fuck! repetition! "<<now_page -> GetSize()<<std::endl;
         return false;
       }
-      head_guard = bpm_ -> FetchPageWrite(internal_page -> ValueAt(slot_num));
-      now_page = head_guard.template AsMut<BPlusTreePage>();
+      context.basic_set_.push_back(bpm_ -> FetchPageBasic(internal_page -> ValueAt(slot_num)));
+    //   guard = bpm_ -> FetchPageBasic(internal_page -> ValueAt(slot_num));
+    //   context.basic_set_.push_back(std::move(guard));
+      now_page = context.basic_set_.back().template AsMut<BPlusTreePage>();
+      now_page_id = context.basic_set_.back().PageId();
     }
-    auto leaf_page = reinterpret_cast<const LeafPage*>(now_page);
+    auto leaf_page = reinterpret_cast<LeafPage*>(now_page);
     int slot_num = BinaryFind(leaf_page, key);
     if(slot_num != -1){
+        // std::cout<<"fuck! found!! "<<now_page -> GetSize()<<std::endl;
       return false;
     }
     InsertIntoLeaf(leaf_page, key, value, txn);
-    return true;
+    std::cout<<DrawBPlusTree()<<std::endl;
+    //now detect whether a split is needed
+    if(leaf_page -> GetSize() > leaf_max_size_){
+        //split
+        std::cout<<"Insertion done, now adjust!"<<std::endl;
+        page_id_t new_page_id;
+        auto new_page_guard = bpm_ -> NewPageGuarded(&new_page_id);
+        auto new_page = new_page_guard.template AsMut<LeafPage>();
+        new_page -> Init();
+        auto split_point = leaf_page -> GetSize() / 2;
+        for(auto i=split_point; i<leaf_page -> GetSize(); i++){
+        new_page -> SetAt(i-split_point, leaf_page -> KeyAt(i), leaf_page -> ValueAt(i));
+        new_page -> IncreaseSize(1);
+        }
+        new_page -> SetNextPageId(leaf_page -> GetNextPageId());
+        leaf_page -> SetNextPageId(new_page_id);
+        leaf_page -> SetSize(split_point);
+        //if this leaf has no father
+        auto left_son_id = now_page_id, right_son_id = new_page_id;
+        if(context.basic_set_.size() == 1){
+            //create a new father
+            auto fa_page_guard = bpm_ -> NewPageGuarded(&new_page_id);
+            auto fa_page = new_page_guard.template AsMut<InternalPage>();
+            fa_page -> Init();
+            fa_page -> SetValueAt(0, left_son_id);
+            fa_page -> SetKeyAt(1, new_page -> KeyAt(0));
+            fa_page -> SetValueAt(1, right_son_id);
+            fa_page -> IncreaseSize(1);
+            SetRootPageId(new_page_id);
+            return true;
+        }
+        //if this leaf has a father
+        // auto fa_page_guard = context.basic_set_[context.basic_set_.size()-2];
+        // auto fa_page = fa_page_guard.template AsMut<InternalPage>();
+        // fa_page -> InsertNodeAfter(left_son_id, new_page -> KeyAt(0), right_son_id);
+        // SetRootPageId(new_page_id);
+        // new_page_guard.Drop();
+    }
   }
   return true;
 }
@@ -185,12 +272,10 @@ auto BPLUSTREE_TYPE::BinaryFind(const LeafPage* leaf_page, const KeyType& key)
       r = mid - 1;
     }
   }
-
-  if (r >= 0 && comparator_(leaf_page -> KeyAt(r), key) == 1)
+  if (r >= 0 && comparator_(leaf_page -> KeyAt(r), key) != 0)
   {
     r = -1;
   }
-
   return r;
 }
 

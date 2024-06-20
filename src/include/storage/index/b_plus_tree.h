@@ -47,6 +47,9 @@ class Context {
   // Save the root page id here so that it's easier to know if the current page is the root page.
   page_id_t root_page_id_{INVALID_PAGE_ID};
 
+// Store the basic guards of the pages that you're modifying here.
+  std::deque<BasicPageGuard> basic_set_;
+
   // Store the write guards of the pages that you're modifying here.
   std::deque<WritePageGuard> write_set_;
 
@@ -136,7 +139,8 @@ class BPlusTree {
   // Insert a key and value into the B+ tree Leaf Page
   void InsertIntoLeaf(LeafPage *leaf_page, const KeyType &key, const ValueType &value, Transaction *txn);
 
-
+  //ChangeRootPageId to root_page_id
+  void SetRootPageId(page_id_t root_page_id);
   /* Debug Routines for FREE!! */
   void ToGraph(page_id_t page_id, const BPlusTreePage *page, std::ofstream &out);
 
