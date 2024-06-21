@@ -69,12 +69,12 @@ namespace bustub
             std::vector<ValueType>* result, Transaction* txn)
         -> bool
     {
-        BasicPageGuard head_guard = bpm_->FetchPageBasic(header_page_id_);
+        ReadPageGuard head_guard = bpm_->FetchPageRead(header_page_id_);
         if (head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_ == INVALID_PAGE_ID) {
             return false;
         }
         else {
-            BasicPageGuard guard = bpm_->FetchPageBasic(head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_);
+            ReadPageGuard guard = bpm_->FetchPageRead(head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_);
             head_guard.Drop();
             auto now_page = guard.template As<BPlusTreePage>();
             while (!now_page->IsLeafPage()) {
@@ -83,7 +83,7 @@ namespace bustub
                 if (slot_num == -1) {
                     return false;
                 }
-                guard = bpm_->FetchPageBasic(internal_page->ValueAt(slot_num));
+                guard = bpm_->FetchPageRead(internal_page->ValueAt(slot_num));
                 now_page = guard.template As<BPlusTreePage>();
             }
             auto leaf_page = reinterpret_cast<const LeafPage*>(now_page);
@@ -109,7 +109,7 @@ namespace bustub
     INDEX_TEMPLATE_ARGUMENTS
         void BPLUSTREE_TYPE::SetRootPageId(page_id_t root_page_id)
     {
-        BasicPageGuard guard = bpm_->FetchPageBasic(header_page_id_);
+        WritePageGuard guard = bpm_->FetchPageWrite(header_page_id_);
         auto root_header_page = guard.template AsMut<BPlusTreeHeaderPage>();
         root_header_page->root_page_id_ = root_page_id;
         return;
@@ -160,44 +160,45 @@ namespace bustub
         auto BPLUSTREE_TYPE::Insert(const KeyType& key, const ValueType& value,
             Transaction* txn)  ->  bool
     {
-        BasicPageGuard head_guard = bpm_->FetchPageBasic(header_page_id_);
-
-        if (head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_ == INVALID_PAGE_ID) {
+        //Create a Context class to keep track of the pages on the path to the leaf page
+        Context context;
+        context.header_page_ = bpm_->FetchPageWrite(header_page_id_);
+        if (context.header_page_.value().template As<BPlusTreeHeaderPage>()->root_page_id_ == INVALID_PAGE_ID) {
             // Create a B+ tree
-            head_guard.Drop();
             page_id_t new_id;
             auto root_guard = bpm_->NewPageGuarded(&new_id);
-            SetRootPageId(new_id);
-            BasicPageGuard guard = bpm_->FetchPageBasic(new_id);
-            root_guard.Drop();
-            auto now_page = guard.template AsMut<LeafPage>();
+
+            //SetRootPageId(new_id);
+            auto root_header_page = context.header_page_.value().template AsMut<BPlusTreeHeaderPage>();
+            root_header_page->root_page_id_ = new_id;
+
+            context.header_page_.value().Drop();
+            auto now_page = root_guard.template AsMut<LeafPage>();
             now_page->Init();
             now_page->IncreaseSize(1);
 
             //leaf page starts at index 0
             now_page->SetAt(0, key, value);
+            root_guard.Drop();
             return true;
         }
         else {
-            //Create a Context class to keep track of the pages on the path to the leaf page
-            Context context;
             // Insert into leaf page
-            context.basic_set_.push_back(bpm_->FetchPageBasic(head_guard.template AsMut<BPlusTreeHeaderPage>()->root_page_id_));
-            head_guard.Drop();
-            page_id_t now_page_id = context.basic_set_.back().PageId();
-            auto now_page = context.basic_set_.back().template AsMut<BPlusTreePage>();
+            context.write_set_.push_back(bpm_->FetchPageWrite(context.header_page_.value().template AsMut<BPlusTreeHeaderPage>()->root_page_id_));
+            page_id_t now_page_id = context.write_set_.back().PageId();
+            auto now_page = context.write_set_.back().template AsMut<BPlusTreePage>();
             while (!now_page->IsLeafPage()) {
                 auto internal_page = reinterpret_cast<InternalPage*>(now_page);
                 int slot_num = BinaryFind(internal_page, key);
                 if (slot_num == -1) {
                     return false;
                 }
-                context.basic_set_.push_back(bpm_->FetchPageBasic(internal_page->ValueAt(slot_num)));
-                now_page = context.basic_set_.back().template AsMut<BPlusTreePage>();
-                now_page_id = context.basic_set_.back().PageId();
+                context.write_set_.push_back(bpm_->FetchPageWrite(internal_page->ValueAt(slot_num)));
+                now_page = context.write_set_.back().template AsMut<BPlusTreePage>();
+                now_page_id = context.write_set_.back().PageId();
             }
 
-            while (!context.basic_set_.empty()) {
+            while (!context.write_set_.empty()) {
                 //now repeat until the root page is reached 
                 // or no more split is needed (containing the case where a new root is created)
                 if (now_page->IsLeafPage()) {
@@ -240,7 +241,7 @@ namespace bustub
 
                     //if this node has no father, simply return after creating a new father
                     const page_id_t left_son_id = now_page_id, right_son_id = new_page_id;
-                    if (context.basic_set_.size() == 1) {
+                    if (context.write_set_.size() == 1) {
                         //create a new father
                         page_id_t fa_page_id;
                         auto fa_page_guard = bpm_->NewPageGuarded(&fa_page_id);
@@ -250,17 +251,21 @@ namespace bustub
                         fa_page->SetValueAt(0, left_son_id);
                         fa_page->SetValueAt(1, right_son_id);
                         fa_page->SetKeyAt(1, new_page->KeyAt(0));
-                        SetRootPageId(fa_page_id);
+
+                        // SetRootPageId(fa_page_id);
+                        auto root_header_page = context.header_page_.value().template AsMut<BPlusTreeHeaderPage>();
+                        root_header_page->root_page_id_ = fa_page_id;
+
                         return true;
                     }
                     //if this node has a father
-                    context.basic_set_.pop_back();
-                    auto fa_page = context.basic_set_.back().template AsMut<InternalPage>();
+                    context.write_set_.pop_back();
+                    auto fa_page = context.write_set_.back().template AsMut<InternalPage>();
                     InsertIntoInternal(fa_page, new_page->KeyAt(0), right_son_id, txn);
 
                     //refresh now_page and now_page_id
                     now_page = fa_page;
-                    now_page_id = context.basic_set_.back().PageId();
+                    now_page_id = context.write_set_.back().PageId();
                 }
                 else {
                     //if this page is a internal page
@@ -285,7 +290,7 @@ namespace bustub
 
                     //if this node has no father, create a new father and change root_page_id
                     const page_id_t left_son_id = now_page_id, right_son_id = new_page_id;
-                    if (context.basic_set_.size() == 1) {
+                    if (context.write_set_.size() == 1) {
                         //create a new father
                         page_id_t fa_page_id;
                         auto fa_page_guard = bpm_->NewPageGuarded(&fa_page_id);
@@ -295,17 +300,21 @@ namespace bustub
                         fa_page->SetValueAt(0, left_son_id);
                         fa_page->SetValueAt(1, right_son_id);
                         fa_page->SetKeyAt(1, split_key);
-                        SetRootPageId(fa_page_id);
+
+                        // SetRootPageId(fa_page_id);
+                        auto root_header_page = context.header_page_.value().template AsMut<BPlusTreeHeaderPage>();
+                        root_header_page->root_page_id_ = fa_page_id;
+
                         return true;
                     }
                     //if this leaf has a father
-                    context.basic_set_.pop_back();
-                    auto fa_page = context.basic_set_.back().template AsMut<InternalPage>();
+                    context.write_set_.pop_back();
+                    auto fa_page = context.write_set_.back().template AsMut<InternalPage>();
                     InsertIntoInternal(fa_page, split_key, right_son_id, txn);
 
                     //refresh now_page and now_page_id
                     now_page = fa_page;
-                    now_page_id = context.basic_set_.back().PageId();
+                    now_page_id = context.write_set_.back().PageId();
                 }
             }
 
@@ -344,6 +353,7 @@ namespace bustub
             //if the tree is empty, simply return
             return;
         }
+        // Context context
         BasicPageGuard guard = bpm_->FetchPageBasic(head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_);
         head_guard.Drop();
         auto now_page = guard.template AsMut<BPlusTreePage>();
@@ -356,6 +366,8 @@ namespace bustub
             guard = bpm_->FetchPageBasic(internal_page->ValueAt(slot_num));
             now_page = guard.template AsMut<BPlusTreePage>();
         }
+        
+
         auto leaf_page = reinterpret_cast<LeafPage*>(now_page);
         int slot_num = BinaryFind(leaf_page, key);
         if (slot_num == -1) {
