@@ -136,9 +136,14 @@ class BPlusTree {
 
  private:
   // Utility functions
-  // Insert a key and value into the B+ tree Leaf Page
+  // Insert a key and value into the B+ tree Leaf Page(automatically find position)
   void InsertIntoLeaf(LeafPage *leaf_page, const KeyType &key, const ValueType &value, Transaction *txn);
+  // Delete a key and value from the B+ tree Leaf Page
   void RemoveFromLeaf(LeafPage* leaf_page, const KeyType &key, Transaction* txn);
+
+  // Insert a key and value into the B+ tree Internal Page(automatically find position)
+  void InsertIntoInternal(InternalPage* internal_page, const KeyType& key,const page_id_t& value, Transaction* txn);
+
   //ChangeRootPageId to root_page_id
   void SetRootPageId(page_id_t root_page_id);
   /* Debug Routines for FREE!! */
