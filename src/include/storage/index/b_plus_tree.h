@@ -140,7 +140,7 @@ class BPlusTree {
   void InsertIntoLeaf(LeafPage *leaf_page, const KeyType &key, const ValueType &value, Transaction *txn);
   // Delete a key and value from the B+ tree Leaf Page
   void RemoveFromLeaf(LeafPage* leaf_page, const KeyType &key, Transaction* txn);
-
+  void RemoveFromInternalWithIndex(InternalPage* internal_page, const int& index, Transaction* txn);
   // Insert a key and value into the B+ tree Internal Page(automatically find position)
   void InsertIntoInternal(InternalPage* internal_page, const KeyType& key,const page_id_t& value, Transaction* txn);
 

@@ -227,6 +227,17 @@ namespace bustub
                     }
                     new_page->SetNextPageId(leaf_page->GetNextPageId());
                     leaf_page->SetNextPageId(new_page_id);
+                    if(new_page->GetNextPageId() == INVALID_PAGE_ID){
+                        //if the new page is the last page
+                        new_page->SetLastPageId(now_page_id);
+                    }
+                    else{
+                        //if the new page is not the last page
+                        auto next_page_guard = bpm_->FetchPageWrite(new_page->GetNextPageId());
+                        auto next_page = next_page_guard.template AsMut<LeafPage>();
+                        new_page->SetLastPageId(now_page_id);
+                        next_page->SetLastPageId(new_page_id);
+                    }
                     leaf_page->SetSize(split_point);
 
                     //debug begin
@@ -346,6 +357,19 @@ namespace bustub
     }
 
     INDEX_TEMPLATE_ARGUMENTS
+        void BPLUSTREE_TYPE::RemoveFromInternalWithIndex(InternalPage* internal_page, const int& index, Transaction* txn)
+    {
+        int slot_cnt = internal_page->GetSize() - 1;
+        for (int i = index; i < slot_cnt; i++) {
+            internal_page->SetKeyAt(i, internal_page->KeyAt(i + 1));
+            internal_page->SetValueAt(i, internal_page->ValueAt(i + 1));
+        }
+        internal_page->IncreaseSize(-1);
+        return;
+    }
+
+    
+    INDEX_TEMPLATE_ARGUMENTS
         void BPLUSTREE_TYPE::Remove(const KeyType& key, Transaction* txn)
     {
         BasicPageGuard head_guard = bpm_->FetchPageBasic(header_page_id_);
@@ -353,27 +377,175 @@ namespace bustub
             //if the tree is empty, simply return
             return;
         }
-        // Context context
-        BasicPageGuard guard = bpm_->FetchPageBasic(head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_);
+        Context context;
+        context.basic_set_.push_back(bpm_->FetchPageBasic(head_guard.template As<BPlusTreeHeaderPage>()->root_page_id_));
+        page_id_t now_page_id = context.basic_set_.back().PageId();
+        auto now_page = context.basic_set_.back().template AsMut<BPlusTreePage>();
         head_guard.Drop();
-        auto now_page = guard.template AsMut<BPlusTreePage>();
         while (!now_page->IsLeafPage()) {
             auto internal_page = reinterpret_cast<InternalPage*>(now_page);
             int slot_num = BinaryFind(internal_page, key);
             if (slot_num == -1) {
                 return;
             }
-            guard = bpm_->FetchPageBasic(internal_page->ValueAt(slot_num));
-            now_page = guard.template AsMut<BPlusTreePage>();
+            context.basic_set_.push_back(bpm_->FetchPageBasic(internal_page->ValueAt(slot_num)));
+            now_page = context.basic_set_.back().template AsMut<BPlusTreePage>();
+            now_page_id = context.basic_set_.back().PageId();
         }
-        
 
-        auto leaf_page = reinterpret_cast<LeafPage*>(now_page);
-        int slot_num = BinaryFind(leaf_page, key);
-        if (slot_num == -1) {
-            return;
+        while (!context.basic_set_.empty()) {
+            //now repeat until the root page is reached
+            // or no more merge is needed 
+            if (now_page->IsLeafPage()) {
+                auto leaf_page = reinterpret_cast<LeafPage*>(now_page);
+                int slot_num = BinaryFind(leaf_page, key);
+                if (slot_num == -1) {
+                    return;
+                }
+                RemoveFromLeaf(leaf_page, key, txn);
+
+                if (now_page->GetSize() >= ((leaf_max_size_/2 > 0)?(leaf_max_size_/2):1)) {
+                    break;
+                }
+                //merge
+                if (context.basic_set_.size() == 1) {
+                    //if this is the root page
+                    if (now_page->GetSize() == 0) {
+                        //if the root page is empty, delete it
+                        // SetRootPageId(INVALID_PAGE_ID);
+                        auto root_header_page = context.header_page_.value().template AsMut<BPlusTreeHeaderPage>();
+                        root_header_page->root_page_id_ = INVALID_PAGE_ID;
+                        return;
+                    }
+                    break;
+                }
+                //if this is not the root page
+                // fa_guard = context.basic_set_[context.basic_set_.size()-2];
+                // find left_brother(if exist) and try to redistribute
+                auto fa_page = context.basic_set_[context.basic_set_.size() - 2].template AsMut<InternalPage>();
+                int fa_slot_num = BinaryFind(fa_page, key);
+                page_id_t bro_page_id;
+                if(fa_slot_num == 0){
+                    //if the key is the first key in the leaf page, try right_brother
+                    bro_page_id = fa_page->ValueAt(1);
+                }
+                else{
+                    bro_page_id = fa_page->ValueAt(fa_slot_num - 1);
+                }
+                auto bro_guard = bpm_->FetchPageBasic(bro_page_id);
+                auto bro_page = bro_guard.template AsMut<LeafPage>();
+                std::cout<<"bro_page size="<<bro_page->GetSize()<<std::endl;
+                std::cout<<"bro maxsize="<<bro_page->GetMaxSize()<<std::endl;
+                std::cout<<"bro minsize="<<((leaf_max_size_/2 > 0)?(leaf_max_size_/2):1)<<std::endl;
+                if (bro_page->GetSize() > ((leaf_max_size_/2 > 0)?(leaf_max_size_/2):1)) {
+                    //redistribute
+                    if(fa_slot_num == 0){
+                        //if the key is the first key in father page, update the key in the father page
+                        //and steal from the right brother
+                        KeyType new_key = bro_page->KeyAt(0);
+                        ValueType new_value = bro_page->ValueAt(0);
+                        RemoveFromLeaf(bro_page, new_key, txn);
+                        InsertIntoLeaf(leaf_page, new_key, new_value, txn);
+                        fa_page->SetKeyAt(1, bro_page->KeyAt(0));
+                    }
+                    else{
+                        //if the key is not the first key in father page, steal from the left brother
+                        KeyType new_key = bro_page->KeyAt(bro_page->GetSize()-1);
+                        ValueType new_value = bro_page->ValueAt(bro_page->GetSize()-1);
+                        RemoveFromLeaf(bro_page, new_key, txn);
+                        InsertIntoLeaf(leaf_page, new_key, new_value, txn);
+                        fa_page->SetKeyAt(fa_slot_num, new_key);
+                    }
+                    return;
+                }
+                else{
+                    std::cout<<"checkpoint1"<<std::endl;
+                    std::cin.get();
+                    //merge, fa page will change, therefore we need to iterate the loop
+                    if(fa_slot_num == 0){
+                        std::cout<<"checkpoint2"<<std::endl;
+                        std::cin.get();
+                        //if the key is the first key in father page, merge with the right brother
+                        for(auto i=0;i<leaf_page->GetSize();i++){
+                            bro_page->IncreaseSize(1);
+                            InsertIntoLeaf(bro_page, leaf_page->KeyAt(i), leaf_page->ValueAt(i), txn);
+                        }
+                        auto last_page_id = leaf_page->GetLastPageId();
+                        if(last_page_id != INVALID_PAGE_ID){
+                            auto last_page_guard = bpm_->FetchPageBasic(last_page_id);
+                            auto last_page = last_page_guard.template AsMut<LeafPage>();
+                            last_page->SetNextPageId(bro_page->GetNextPageId());
+                        }
+                        std::cout<<"checkpoint3"<<std::endl;
+                        std::cin.get();
+                        bro_page->SetLastPageId(last_page_id);
+                        fa_page->SetKeyAt(0, fa_page->KeyAt(1));
+                        std::cout<<"checkpoint4: fa_page_size="<<fa_page ->GetSize()<<std::endl;
+                        std::cin.get();
+                        RemoveFromLeaf(bro_page, key, txn);
+                        if(fa_page ->GetSize() == 2){
+                            //if the father page has only one key, delete it
+                            // SetRootPageId(bro_page_id);
+                            std::cout<<"root_page_id="<<context.header_page_.value().template As<BPlusTreeHeaderPage>()->root_page_id_<<std::endl;
+                            std::cout<<"now_page_id="<<now_page_id<<std::endl;
+                            std::cout<<"bro_page_id="<<bro_page_id<<std::endl;
+                            std::cout<<"fa_page_id="<<context.basic_set_[context.basic_set_.size()-2].PageId()<<std::endl;
+                            std::cin.get();
+                            auto root_header_page = context.header_page_.value().template AsMut<BPlusTreeHeaderPage>();
+                            root_header_page->root_page_id_ = bro_page_id;
+                            RemoveFromInternalWithIndex(fa_page, 1, txn);
+                            bpm_->DeletePage(now_page_id);
+                            bpm_->DeletePage(context.basic_set_[context.basic_set_.size()-2].PageId());
+                            return;
+                        }
+                        RemoveFromInternalWithIndex(fa_page, 1, txn);
+                        //delete leaf_page
+                        bpm_->DeletePage(now_page_id);
+                    }
+                    else{
+                        //if the key is not the first key in father page, merge with the left brother
+                        for(auto i=0;i<leaf_page->GetSize();i++){
+                            bro_page->IncreaseSize(1);
+                            InsertIntoLeaf(bro_page, leaf_page->KeyAt(i), leaf_page->ValueAt(i), txn);
+                        }
+                        auto next_page_id = leaf_page->GetNextPageId();
+                        if(next_page_id != INVALID_PAGE_ID){
+                            auto next_page_guard = bpm_->FetchPageBasic(next_page_id);
+                            auto next_page = next_page_guard.template AsMut<LeafPage>();
+                            next_page->SetLastPageId(bro_page_id);
+                        }
+                        bro_page->SetNextPageId(leaf_page->GetNextPageId());
+                        RemoveFromLeaf(bro_page, key, txn);
+                        if(fa_page ->GetSize() == 2){
+                            //if the father page has only one key, delete it
+                            // SetRootPageId(bro_page_id);
+                            auto root_header_page = context.header_page_.value().template AsMut<BPlusTreeHeaderPage>();
+                            root_header_page->root_page_id_ = bro_page_id;
+                            RemoveFromInternalWithIndex(fa_page, fa_slot_num, txn);
+                            bpm_->DeletePage(now_page_id);
+                            bpm_->DeletePage(context.basic_set_[context.basic_set_.size()-2].PageId());
+                            return;
+                        }
+                        RemoveFromInternalWithIndex(fa_page, fa_slot_num, txn);
+                        //delete leaf_page
+                        bpm_->DeletePage(now_page_id);
+                    }
+                    //refresh now_page and now_page_id
+                    now_page = fa_page;
+                    now_page_id = context.basic_set_[context.basic_set_.size() - 2].PageId();
+                    context.basic_set_.pop_back();
+                }
+            }
+            else{
+                //if this page is a internal page
+                auto internal_page = reinterpret_cast<InternalPage*>(now_page);
+                if(internal_page->GetSize() >= ((internal_max_size_/2 > 1)?(internal_max_size_/2):2)){
+                    break;
+                }
+
+            }
+
         }
-        RemoveFromLeaf(leaf_page, key, txn);
         return;
     }
 

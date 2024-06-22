@@ -57,7 +57,10 @@ class BPlusTreeLeafPage : public BPlusTreePage
 
   // Helper methods
   auto GetNextPageId() const -> page_id_t;
+  auto GetLastPageId() const -> page_id_t;
   void SetNextPageId(page_id_t next_page_id);
+  void SetLastPageId(page_id_t last_page_id);
+  
   auto KeyAt(int index) const -> KeyType;
   auto ValueAt(int index) const -> ValueType;
   void SetAt(int index, const KeyType & key, const ValueType & value);
@@ -95,6 +98,7 @@ class BPlusTreeLeafPage : public BPlusTreePage
 
   private:
   page_id_t next_page_id_;
+  page_id_t last_page_id_;
   // Flexible array member for page data.
   MappingType array_[0];
 };

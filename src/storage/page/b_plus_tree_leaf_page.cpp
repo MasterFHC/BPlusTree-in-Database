@@ -36,6 +36,7 @@ void B_PLUS_TREE_LEAF_PAGE_TYPE::Init(int max_size)
   SetSize(0);
   SetMaxSize(max_size);
   SetNextPageId(INVALID_PAGE_ID);
+  SetLastPageId(INVALID_PAGE_ID);
 }
 
 /**
@@ -48,9 +49,21 @@ auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetNextPageId() const -> page_id_t
 }
 
 INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetLastPageId() const -> page_id_t
+{
+  return last_page_id_;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_LEAF_PAGE_TYPE::SetNextPageId(page_id_t next_page_id)
 {
   this->next_page_id_ = next_page_id;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::SetLastPageId(page_id_t last_page_id)
+{
+  this->last_page_id_ = last_page_id;
 }
 
 /*
